@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>La Enriqueta</title>
+<style>
+  :root{ --ink:#fff; --bg:#0d0d0d; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ background:var(--bg); }
+  body{ font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; color:var(--ink); -webkit-font-smoothing:antialiased; }
+  #scroller{ position:relative; }
+  #stage{ position:sticky; top:0; height:100vh; height:100dvh; width:100%; overflow:hidden; }
+  canvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #shade{ position:absolute; inset:0; pointer-events:none;
+    background:linear-gradient(to top, rgba(0,0,0,.55) 0%, rgba(0,0,0,.28) 30%, rgba(0,0,0,0) 55%); }
+  #text{ position:absolute; left:clamp(20px,5vw,64px); bottom:calc(clamp(28px,7vh,72px) + env(safe-area-inset-bottom,0px));
+    right:clamp(20px,5vw,64px); max-width:620px; pointer-events:none; }
+  #title{ font-weight:800; font-size:clamp(40px,9vw,64px); line-height:1; letter-spacing:-0.01em; text-transform:uppercase; opacity:0; will-change:opacity,transform; }
+  #desc{ margin-top:16px; font-weight:400; font-size:16px; line-height:1.5; max-width:420px; opacity:0; will-change:opacity,transform; text-transform:none; }
+  #loader{ position:fixed; inset:0; z-index:10; background:var(--bg); display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px; transition:opacity .5s; }
+  #loader span{ font-weight:500; font-size:12px; letter-spacing:.04em; opacity:.7; }
+  #bar{ width:160px; height:2px; background:rgba(255,255,255,.18); }
+  #bar i{ display:block; height:100%; width:0; background:#fff; }
+  #hint{ position:absolute; left:50%; transform:translateX(-50%); bottom:calc(14px + env(safe-area-inset-bottom,0px)); font-weight:500; font-size:12px; opacity:.7; transition:opacity .4s; pointer-events:none; }
+</style>
+</head>
+<body>
+<div id="loader"><div id="bar"><i></i></div><span id="pct">0%</span></div>
+<div id="scroller">
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="shade"></div>
+    <div id="text"><h1 id="title"></h1><p id="desc"></p></div>
+    <div id="hint">scrolleá</div>
+  </div>
+</div>
+
+<script>
+/* ===== EDITÁ ACÁ LOS TEXTOS (uno por cada pausa, en orden) ===== */
+const TEXTS = [
+  {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"},
+  {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"},
+  {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"},
+  {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}, {t:"TÍTULO", d:"descripción"}
+];
+/* ===== Ajustes de ritmo (en alturas de pantalla) ===== */
+const HOLD_VH = 1.15;   // cuánto dura cada pausa
+const TRANS_VH = 0.55;  // cuánto dura cada transición
+/* ============================================================ */
+
+const CFG = {count:736, holds:[0,49,98,147,196,245,294,343,392,441,490,539,588,637,686,735]};
+const N = CFG.holds.length;
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const scroller = document.getElementById('scroller');
+const titleEl = document.getElementById('title'), descEl = document.getElementById('desc'), hint = document.getElementById('hint');
+const imgs = new Array(CFG.count);
+let W=0,H=0,dpr=1,total=0,vh=0;
+
+function layout(){
+  vh = window.innerHeight; dpr = Math.min(window.devicePixelRatio||1,2);
+  W = window.innerWidth; H = vh;
+  cv.width = W*dpr; cv.height = H*dpr;
+  total = (N*HOLD_VH + (N-1)*TRANS_VH)*vh;
+  scroller.style.height = (total + vh) + 'px';
+  draw(true);
+}
+window.addEventListener('resize', layout);
+
+/* posición de scroll -> {hold, p} o {trans, a, b, p} */
+function locate(y){
+  const hp = HOLD_VH*vh, tp = TRANS_VH*vh;
+  let pos = Math.max(0, Math.min(y, total-0.01));
+  for(let i=0;i<N;i++){
+    if(pos < hp) return {hold:i, p:pos/hp, frame:CFG.holds[i]};
+    pos -= hp;
+    if(i===N-1) break;
+    if(pos < tp){ const p=pos/tp; return {hold:-1, near:i, p, frame: CFG.holds[i] + (CFG.holds[i+1]-CFG.holds[i])*p}; }
+    pos -= tp;
+  }
+  return {hold:N-1, p:1, frame:CFG.holds[N-1]};
+}
+const ss=(a,b,x)=>{ const t=Math.max(0,Math.min(1,(x-a)/(b-a))); return t*t*(3-2*t); };
+
+let target=0, cur=0, shown=-1, lastText=-1;
+function nearestLoaded(f){
+  f=Math.round(f);
+  for(let d=0; d<CFG.count; d++){
+    const a=imgs[f-d]; if(a&&a.complete&&a.naturalWidth) return a;
+    const b=imgs[f+d]; if(b&&b.complete&&b.naturalWidth) return b;
+  }
+  return null;
+}
+function draw(force){
+  const f = Math.round(cur);
+  if(f===shown && !force) return;
+  const im = nearestLoaded(f); if(!im) return;
+  shown = f;
+  const cw=cv.width, ch=cv.height, s=Math.max(cw/im.naturalWidth, ch/im.naturalHeight);
+  const w=im.naturalWidth*s, h=im.naturalHeight*s;
+  ctx.drawImage(im,(cw-w)/2,(ch-h)/2,w,h);
+}
+function updateText(loc){
+  if(loc.hold>=0){
+    if(lastText!==loc.hold){
+      lastText=loc.hold; const t=TEXTS[loc.hold]||{t:'',d:''};
+      titleEl.textContent=t.t; descEl.textContent=t.d;
+    }
+    let p = loc.p; if(loc.hold===0) p = 0.12 + p*0.88;
+    const out = loc.hold===N-1 ? 1 : 1-ss(0.86,1,p);
+    const ti = ss(0.06,0.26,p)*out, di = ss(0.34,0.56,p)*out;
+    titleEl.style.opacity=ti; titleEl.style.transform=`translateY(${(1-ti)*14}px)`;
+    descEl.style.opacity=di; descEl.style.transform=`translateY(${(1-di)*10}px)`;
+  } else {
+    titleEl.style.opacity=0; descEl.style.opacity=0;
+  }
+  hint.style.opacity = window.scrollY>40 ? 0 : .7;
+}
+function tick(){
+  const loc = locate(window.scrollY);
+  target = loc.frame;
+  cur += (target-cur)*0.22;
+  if(Math.abs(target-cur)<0.05) cur=target;
+  draw(false); updateText(loc);
+  requestAnimationFrame(tick);
+}
+
+/* precarga */
+function preload(){
+  return new Promise(res=>{
+    let done=0, next=0; const bar=document.querySelector('#bar i'), pct=document.getElementById('pct');
+    const order=[...Array(CFG.count).keys()];
+    function pump(){
+      if(next>=order.length) return;
+      const i=order[next++]; const im=new Image();
+      im.onload=im.onerror=()=>{ done++; const v=Math.round(done/CFG.count*100); bar.style.width=v+'%'; pct.textContent=v+'%'; if(done===CFG.count) res(); else pump(); };
+      im.src='frames/'+String(i).padStart(4,'0')+'.webp'; imgs[i]=im;
+    }
+    for(let k=0;k<8;k++) pump();
+  });
+}
+layout();
+preload().then(()=>{
+  const l=document.getElementById('loader'); l.style.opacity=0; setTimeout(()=>l.remove(),500);
+  layout(); cur=0; tick();
+});
+</script>
+</body>
+</html>
